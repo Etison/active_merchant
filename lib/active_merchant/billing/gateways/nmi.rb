@@ -3,7 +3,7 @@ module ActiveMerchant #:nodoc:
     class NmiGateway < Gateway
       include Empty
 
-      DUP_WINDOW_DEPRECATION_MESSAGE = "The class-level duplicate_window variable is deprecated. Please use the :dup_seconds transaction option instead."
+      DUP_WINDOW_DEPRECATION_MESSAGE = 'The class-level duplicate_window variable is deprecated. Please use the :dup_seconds transaction option instead.'
 
       self.test_url = self.live_url = 'https://secure.nmi.com/api/transact.php'
       self.default_currency = 'USD'
@@ -32,9 +32,10 @@ module ActiveMerchant #:nodoc:
         add_invoice(post, amount, options)
         add_payment_method(post, payment_method, options)
         add_customer_data(post, options)
+        add_vendor_data(post, options)
         add_merchant_defined_fields(post, options)
 
-        type = options[:start_date] ? nil : "sale"
+        type = options[:start_date] ? nil : 'sale'
         commit(type, post)
       end
 
@@ -43,9 +44,10 @@ module ActiveMerchant #:nodoc:
         add_invoice(post, amount, options)
         add_payment_method(post, payment_method, options)
         add_customer_data(post, options)
+        add_vendor_data(post, options)
         add_merchant_defined_fields(post, options)
 
-        commit("auth", post)
+        commit('auth', post)
       end
 
       def capture(amount, authorization, options={})
@@ -54,7 +56,7 @@ module ActiveMerchant #:nodoc:
         add_reference(post, authorization)
         add_merchant_defined_fields(post, options)
 
-        commit("capture", post)
+        commit('capture', post)
       end
 
       def void(authorization, options={})
@@ -62,7 +64,7 @@ module ActiveMerchant #:nodoc:
         add_reference(post, authorization)
         add_payment_type(post, authorization)
 
-        commit("void", post)
+        commit('void', post)
       end
 
       def refund(amount, authorization, options={})
@@ -71,7 +73,7 @@ module ActiveMerchant #:nodoc:
         add_reference(post, authorization)
         add_payment_type(post, authorization)
 
-        commit("refund", post)
+        commit('refund', post)
       end
 
       def credit(amount, payment_method, options={})
@@ -79,17 +81,19 @@ module ActiveMerchant #:nodoc:
         add_invoice(post, amount, options)
         add_payment_method(post, payment_method, options)
         add_customer_data(post, options)
+        add_vendor_data(post, options)
 
-        commit("credit", post)
+        commit('credit', post)
       end
 
       def verify(payment_method, options={})
         post = {}
         add_payment_method(post, payment_method, options)
         add_customer_data(post, options)
+        add_vendor_data(post, options)
         add_merchant_defined_fields(post, options)
 
-        commit("validate", post)
+        commit('validate', post)
       end
 
       def store(payment_method, options = {})
@@ -97,14 +101,15 @@ module ActiveMerchant #:nodoc:
         add_invoice(post, nil, options)
         add_payment_method(post, payment_method, options)
         add_customer_data(post, options)
+        add_vendor_data(post, options)
         add_merchant_defined_fields(post, options)
 
-        commit("add_customer", post)
+        commit('add_customer', post)
       end
 
       def verify_credentials
-        response = void("0")
-        response.message != "Authentication Failed"
+        response = void('0')
+        response.message != 'Authentication Failed'
       end
 
       def supports_scrubbing?
@@ -117,7 +122,12 @@ module ActiveMerchant #:nodoc:
           gsub(%r((ccnumber=)\d+), '\1[FILTERED]').
           gsub(%r((cvv=)\d+), '\1[FILTERED]').
           gsub(%r((checkaba=)\d+), '\1[FILTERED]').
-          gsub(%r((checkaccount=)\d+), '\1[FILTERED]')
+          gsub(%r((checkaccount=)\d+), '\1[FILTERED]').
+          gsub(%r((cryptogram=)[^&]+(&?)), '\1[FILTERED]\2')
+      end
+
+      def supports_network_tokenization?
+        true
       end
 
       private
@@ -142,8 +152,14 @@ module ActiveMerchant #:nodoc:
         if(payment_method.is_a?(String))
           post[:customer_vault_id] = payment_method
           post[:cvv] = options[:cvv] if options[:cvv].present?
+        elsif payment_method.is_a?(NetworkTokenizationCreditCard)
+          post[:ccnumber] = payment_method.number
+          post[:ccexp] = exp_date(payment_method)
+          post[:token_cryptogram] = payment_method.payment_cryptogram
         elsif(card_brand(payment_method) == 'check')
           post[:payment] = 'check'
+          post[:firstname] = payment_method.first_name
+          post[:lastname] = payment_method.last_name
           post[:checkname] = payment_method.name
           post[:checkaba] = payment_method.routing_number
           post[:checkaccount] = payment_method.account_number
@@ -188,6 +204,11 @@ module ActiveMerchant #:nodoc:
         end
       end
 
+      def add_vendor_data(post, options)
+        post[:vendor_id] = options[:vendor_id] if options[:vendor_id]
+        post[:processor_id] = options[:processor_id] if options[:processor_id]
+      end
+
       def add_merchant_defined_fields(post, options)
         (1..20).each do |each|
           key = "merchant_defined_field_#{each}".to_sym
@@ -210,7 +231,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def commit(action = nil, params = {})
-        params[action == "add_customer" ? :customer_vault : :type] = action
+        params[action == 'add_customer' ? :customer_vault : :type] = action
         params[:username] = @options[:login]
         params[:password] = @options[:password]
 
@@ -230,19 +251,19 @@ module ActiveMerchant #:nodoc:
       end
 
       def authorization_from(response, payment_type)
-        [ response[:transactionid], payment_type ].join("#")
+        [ response[:transactionid], payment_type ].join('#')
       end
 
       def split_authorization(authorization)
-        authorization.split("#")
+        authorization.split('#')
       end
 
       def headers
-        { "Content-Type"  => "application/x-www-form-urlencoded;charset=UTF-8" }
+        { 'Content-Type'  => 'application/x-www-form-urlencoded;charset=UTF-8' }
       end
 
       def post_data(action, params)
-        params.map {|k, v| "#{k}=#{CGI.escape(v.to_s)}"}.join('&')
+        params.map { |k, v| "#{k}=#{CGI.escape(v.to_s)}" }.join('&')
       end
 
       def url
@@ -250,16 +271,16 @@ module ActiveMerchant #:nodoc:
       end
 
       def parse(body)
-        Hash[CGI::parse(body).map { |k,v| [k.intern, v.first] }]
+        Hash[CGI::parse(body).map { |k, v| [k.intern, v.first] }]
       end
 
       def success_from(response)
-        response[:response] == "1"
+        response[:response] == '1'
       end
 
       def message_from(succeeded, response)
         if succeeded
-          "Succeeded"
+          'Succeeded'
         else
           response[:responsetext]
         end
