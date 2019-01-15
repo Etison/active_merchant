@@ -12,6 +12,8 @@ module ActiveMerchant #:nodoc:
       self.homepage_url = 'https://recurly.com/'
       self.display_name = 'Recurly'
 
+      attr_accessor :post_params
+
       def initialize(options = {})
         requires!(options, :subdomain, :api_key, :public_key)
         super
@@ -23,6 +25,7 @@ module ActiveMerchant #:nodoc:
         add_payment_method(post, payment_method, options)
         add_customer_data(post, options)
         type = subscription?(options) ? 'subscriptions' : 'transactions'
+        @post_params = post
         commit(type, post)
       end
 
@@ -130,6 +133,28 @@ module ActiveMerchant #:nodoc:
         }
       end
 
+      def account(url)
+        response = ssl_get(url, headers)
+        plans_hash = Hash.from_xml(response)
+        plans_hash['account']
+      end
+
+      def invoices
+        response = ssl_get(url + 'invoices', headers)
+        plans_hash = Hash.from_xml(response)
+        plans_hash['invoices']
+      end
+
+      def invoice
+        @invoice ||= begin
+          invoices.first(3).find do |inv|
+            api_account = account(inv['account']['href'])
+            puts @post_params.inspect
+            api_account['email'] ==  @post_params[:account][:email]
+          end
+        end
+      end
+
       def message_from(response)
         response[:status]
       end
@@ -157,11 +182,26 @@ module ActiveMerchant #:nodoc:
         end
       end
 
+      #
+      # Checks if invoice paid by credit
+      # status == collected and transactions are empty and amount the same
+      #
+      # @param [Hash] response
+      def paid_credit_invoice?(response)
+        return false if response[:body].present?
+        return false unless invoice.present?
+        invoice['transactions'].blank? &&
+          invoice['state'] == 'collected' &&
+          invoice['line_items'].first['type'] == 'credit' &&
+          invoice['subtotal_in_cents'] == @post_params[:amount_in_cents].to_i
+      end
+
       def subscription?(options)
         options[:plan_code].present?
       end
 
       def success_from(response)
+        response[:uuid] = invoice['line_items'].first['uuid'] if paid_credit_invoice?(response)
         response[:uuid].present?
       end
 
