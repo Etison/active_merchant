@@ -3,7 +3,7 @@ module ActiveMerchant #:nodoc:
     class RecurlyGateway < Gateway
       include Empty
 
-      API_VERSION = '2.4'.freeze
+      API_VERSION = 'v2019-10-10'.freeze
 
       self.default_currency = 'USD'
       self.money_format = :cents
@@ -23,27 +23,15 @@ module ActiveMerchant #:nodoc:
         post = {}
         add_amount(post, amount, options)
         add_payment_method(post, payment_method, options)
+        add_purchase_line_items(post, options) unless subscription?(options)
         add_customer_data(post, options)
-        type = subscription?(options) ? 'subscriptions' : 'transactions'
+        type = subscription?(options) ? 'subscriptions' : 'purchases'
         @post_params = post
         commit(type, post)
       end
 
-      def verify_credentials
-        response = void("0")
-        response.message != "Authentication Failed"
-      end
-
-      def supports_scrubbing?
-        true
-      end
-
-      def scrub(transcript)
-        transcript.
-          gsub(%r((password=)\w+), '\1[FILTERED]').
-          gsub(%r((number=)\d+), '\1[FILTERED]').
-          gsub(%r((cvv=)\d+), '\1[FILTERED]').
-          gsub(%r((verification_value=)\d+), '\1[FILTERED]')
+      def add_purchase_line_items(post, options={})
+        post[:line_items] = options[:line_items] if options[:line_items].present?
       end
 
       private
@@ -51,14 +39,12 @@ module ActiveMerchant #:nodoc:
       def add_amount(post, money, options)
         if subscription?(options)
           post[:plan_code] = options[:plan_code]
-        else
-          post[:amount_in_cents] = amount(money) unless subscription?(options)
         end
         post[:currency] = options[:currency] || currency(money)
       end
 
       def add_customer_data(post, options)
-        %i(account_code first_name last_name email).each do |option|
+        %i(code first_name last_name email).each do |option|
           post[:account][option] = options[option] if options[option].present?
         end
         if(billing_address = options[:billing_address] || options[:address])
@@ -86,38 +72,15 @@ module ActiveMerchant #:nodoc:
         end
       end
 
-      #
-      # Adds tags to xml recursive
-      #
-      def add_tag_recursive(xml, data)
-        data.each do |key, value|
-          if data[key].is_a?(Hash)
-            xml.tag!(key) do
-              add_tag_recursive(xml, data[key])
-            end
-          else
-            xml.tag!(key, value)
-          end
-        end
-      end
-
       def authorization_from(response)
-        response[:uuid]
-      end
-
-      def build_xml_request(action, data)
-        xml = Builder::XmlMarkup.new :indent => 2
-        xml.instruct!
-        xml.tag!(action.to_sym) do
-          add_tag_recursive(xml, data)
-        end
+        response['uuid'].presence || invoice['transactions'][0]['uuid']
       end
 
       def commit(endpoint, params = {})
-        response = parse(ssl_post(url + endpoint, build_xml_request(endpoint.singularize, params), headers))
+        response = JSON.parse(ssl_post(url + endpoint, JSON.dump(params), headers))
         Response.new(
           success_from(response),
-          message_from(response),
+          message_from,
           response,
           authorization: authorization_from(response),
           test: test?
@@ -127,59 +90,27 @@ module ActiveMerchant #:nodoc:
       def headers
         {
           'Authorization' => 'Basic ' + Base64.encode64(@options[:api_key]),
-          'Content-Type'  => 'application/xml; charset=utf-8',
-          'Accept' => 'application/xml',
+          'Content-Type'  => 'application/json; charset=utf-8',
+          'Accept' => "application/vnd.recurly.#{API_VERSION}+json",
           'X-Api-Version' => API_VERSION
         }
       end
 
-      def account(url)
-        response = ssl_get(url, headers)
-        plans_hash = Hash.from_xml(response)
-        plans_hash['account']
-      end
-
       def invoices
         response = ssl_get(url + 'invoices', headers)
-        plans_hash = Hash.from_xml(response)
-        plans_hash['invoices']
+        JSON.parse(response)['data']
       end
 
       def invoice
         @invoice ||= begin
           invoices.first(3).find do |inv|
-            api_account = account(inv['account']['href'])
-            puts @post_params.inspect
-            api_account['email'] ==  @post_params[:account][:email]
+            inv['account']['email'] ==  @post_params[:account][:email]
           end
         end
       end
 
-      def message_from(response)
-        response[:status]
-      end
-
-      def parse(body)
-        return {} if body.blank?
-        xml = REXML::Document.new(body)
-
-        response = {}
-        xml.root.elements.to_a.each do |node|
-          parse_element(response, node)
-        end
-        response
-      end
-
-      def parse_element(response, node)
-        if node.has_attributes?
-          node.attributes.each{|name, value| response["#{node.name}_#{name}".underscore.to_sym] = value }
-        end
-
-        if node.has_elements?
-          node.elements.each{|element| parse_element(response, element) }
-        else
-          response[node.name.underscore.to_sym] = node.text
-        end
+      def message_from
+        invoice['transactions'][0]['status']
       end
 
       #
@@ -188,7 +119,6 @@ module ActiveMerchant #:nodoc:
       #
       # @param [Hash] response
       def paid_credit_invoice?(response)
-        return false if response[:body].present?
         return false unless invoice.present?
         invoice['transactions'].blank? &&
           invoice['state'] == 'collected' &&
@@ -201,12 +131,13 @@ module ActiveMerchant #:nodoc:
       end
 
       def success_from(response)
-        response[:uuid] = invoice['line_items'].first['uuid'] if paid_credit_invoice?(response)
-        response[:uuid].present?
+        response['uuid'] = invoice['line_items'].first['uuid'] if paid_credit_invoice?(response)
+        response['uuid'] ||= response['charge_invoice']['transactions'][0]['uuid'] if response['charge_invoice'].present?
+        response['uuid'].present?
       end
 
       def url
-        "https://#{@options[:subdomain]}.recurly.com/v2/"
+        "https://v3.recurly.com/sites/subdomain-#{@options[:subdomain]}/"
       end
     end
   end
