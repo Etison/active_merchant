@@ -73,6 +73,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def authorization_from(response)
+        return trial_payment_uuid if trial_payment?
         response['uuid'].presence || invoice['transactions'][0]['uuid']
       end
 
@@ -110,6 +111,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def message_from
+        return trial_payment_status if trial_payment?
         invoice['transactions'][0]['status']
       end
 
@@ -138,6 +140,18 @@ module ActiveMerchant #:nodoc:
 
       def url
         "https://v3.recurly.com/sites/subdomain-#{@options[:subdomain]}/"
+      end
+
+      def trial_payment?
+        invoice['transactions'].empty? and invoice["paid"] == 0.0
+      end
+
+      def trial_payment_status
+        return invoice["state"]
+      end
+
+      def trial_payment_uuid
+        return invoice["line_items"]["data"].first["uuid"]
       end
     end
   end
